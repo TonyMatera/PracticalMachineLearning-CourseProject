@@ -1,0 +1,174 @@
+---
+title: 'Practical Machine Learning: Course Project'
+author: "Tony Matera"
+date: "October 18, 2016"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background & Introduction
+
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify *how much* of a particular activity they do, but they rarely quantify *how well they do it*.  
+  
+In this project, our goal was to see if we could predict the manner in which people did an exercise. We used data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset^[1]^).
+
+## Data & Initial Setup
+
+To begin, we will load the necessary libraries.
+
+```{r unpacking, message = FALSE}
+
+cranURL <- "http://cran.rstudio.com/"
+
+if(!require(RGtk2)) {install.packages("RGtk2", repos = cranURL); library(RGtk2)}
+if(!require(plyr)) {install.packages("plyr", repos = cranURL); library(plyr)}
+if(!require(ggplot2)) {install.packages("ggplot2", repos = cranURL); library(ggplot2)}
+if(!require(caret)) {install.packages("caret", repos = cranURL); library(caret)}
+if(!require(rpart)) {install.packages("rpart", repos = cranURL); library(rpart)}
+if(!require(rpart.plot)) {install.packages("rpart.plot", repos = cranURL); library(rpart.plot)}
+if(!require(rattle)) {install.packages("rattle", repos = cranURL); library(rattle)}
+if(!require(gbm)) {install.packages("gbm", repos = cranURL); library(gbm)}
+if(!require(randomForest)) {install.packages("randomForest", repos = cranURL); library(randomForest)}
+
+```
+
+Next, we must load the training and testing sets. There are blanks, 'NA's, and '#DIV/0!'s, so we must specify that they are to be all coded as **NA** as we load the data sets.
+
+```{r datasetup, cache = TRUE}
+
+trainURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+if(!file.exists("./traindata.csv")) {download.file(trainURL, "traindata.csv", mode = "wb")}
+if(!file.exists("./testdata.csv")) {download.file(testURL, "./testdata.csv", mode = "wb")}
+
+traindata <- read.csv("./traindata.csv", na.strings = c("NA", "#DIV/0!", ""))
+testdata <- read.csv("./testdata.csv", na.strings = c("NA", "#DIV/0!", ""))
+
+```
+
+There are several variables with "near zero variances" that should be removed in order to get the best fitting model. We will use the **nearZeroVar** function to identify them in the training data, and then create a new data set using just the other variables. We will also remove any variables that contain at least 75% **NA**s, as well as the first handful of identifier variables that do not help predict. Then we will reduce the testing data set to only contain the same variables.
+
+```{r dataclean, cache = TRUE}
+
+nzvVars <- nearZeroVar(traindata)
+cleanTrain <- traindata[, -nzvVars]
+
+naSums <- colSums(is.na(cleanTrain))
+cleanTrain <- cleanTrain[, naSums < (0.75 * dim(cleanTrain)[1])]
+cleanTrain <- cleanTrain[, -c(1:6)]
+
+cleanVars <- colnames(cleanTrain[, -53])
+cleanTest <- testdata[, cleanVars]
+
+```
+
+Next we will set the seed and split the training data further into a training subset and a validation set, so we can see how accurate our various models can be. 
+
+```{r trainsetup}
+
+set.seed(12341234)
+inTrain <- createDataPartition(cleanTrain$classe, p = 0.6, list = FALSE)
+training <- cleanTrain[inTrain, ]
+validation <- cleanTrain[-inTrain, ]
+
+```
+
+## Prediction Model Building
+
+We will be fitting models using *Decision Trees*, *Gradient Boosting*, and *Random Forests*.
+
+### Decision Tree
+
+Using the **train** function from the **caret** package, we can fit a decision tree model by setting **method = "rpart"**. Below is the resulting model and the decision tree mapped out.
+
+```{r decTree, cache = TRUE}
+
+(rpartMod <- train(classe ~ ., data = training, method = "rpart"))
+fancyRpartPlot(rpartMod$finalModel)
+
+```
+
+Next, we will use the decision tree model to predict the validation data set. To compare our predictions to the actual results, we use a **confusion matrix**.
+
+```{r decTreePred}
+
+rpartPredict <- predict(rpartMod, newdata = validation)
+(rpartConfMat <- confusionMatrix(validation$classe, rpartPredict))
+
+```
+
+As you can see, the decision tree model did not do very well. It resulted in a `r round(rpartConfMat$overall[1], 4) * 100`% accuracy, so we must look at other model methods.  
+  
+### Gradient Boosting
+
+Again using the **train** function from the **caret** package, we can fit a gradient boosting model by setting **method = "gbm"**. Below is the resulting **GBM** model.
+
+```{r gbm, cache = TRUE, message = FALSE}
+
+gbmControl <- trainControl(method = "repeatedcv", number = 5, repeats = 1)
+(gbmMod <- train(classe ~ ., data = training, method = "gbm",
+                trControl = gbmControl, verbose = FALSE))
+
+```
+
+As with the decision tree model, we will use the GBM model to predict the validation data set. To compare our predictions to the actual results, we use another **confusion matrix**.
+
+```{r gbmPred, message = FALSE}
+
+gbmPredict <- predict(gbmMod, newdata = validation)
+(gbmConfMat <- confusionMatrix(validation$classe, gbmPredict))
+
+```
+
+The GBM model performed much better than the decision tree with a `r round(gbmConfMat$overall[1], 4) * 100`% accuracy. However, we will look at the random forest model to be sure we have found the most accurate model.
+
+### Random Forest
+
+Using the **randomForest** function from the package with the same name, we can fit a random forest model from the training data set. Below is the resulting **random forest** model.
+
+```{r randforest, cache = TRUE}
+
+(rfMod <- randomForest(classe ~ ., data = training))
+
+```
+
+Once again, we will use this model to predict the validation data set. To compare our predictions to the actual results, we use yet another **confusion matrix**. 
+
+```{r randforestPred}
+
+rfPredict <- predict(rfMod, newdata = validation)
+(rfConfMat <- confusionMatrix(validation$classe, rfPredict))
+
+```
+
+The random forest model performed the best out of all three methods with an accuracy of `r round(rfConfMat$overall[1], 4) * 100`%. As a result, we will be using the random forest model on the testing data set.
+
+We will also plot the *variable importance plot* to show the hierarchy of how much each variable had an effect on the random forest model.
+
+```{r rfVarImpPlot}
+
+varImpPlot(rfMod, color = "forestgreen", cex = 0.75, pch = 19,
+           main = "Random Forest Model Variable Importance")
+
+```
+
+## Test Data Prediction
+
+Now that we have our best model selected, we will use it to predict the outcome of the 20 testing data set observations.
+
+```{r testPredict}
+
+(testPredict <- predict(rfMod, newdata = cleanTest))
+
+```
+  
+This concludes our analysis.  
+  
+***
+  
+
+######  ^[1]^ Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201). Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.  
